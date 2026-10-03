@@ -30,9 +30,9 @@ def upgrade() -> None:
     )
 
     # --- goals -----------------------------------------------------------
-    goal_type = postgresql.ENUM("personal", "partnership", name="goal_type",create_type=False)
-    goal_period = postgresql.ENUM("weekly", "monthly", name="goal_period",create_type=False)
-    goal_status = postgresql.ENUM("active", "completed", "abandoned", name="goal_status",create_type=False)
+    goal_type = postgresql.ENUM("personal", "partnership", name="goal_type")
+    goal_period = postgresql.ENUM("weekly", "monthly", name="goal_period")
+    goal_status = postgresql.ENUM("active", "completed", "abandoned", name="goal_status")
     goal_type.create(op.get_bind(), checkfirst=True)
     goal_period.create(op.get_bind(), checkfirst=True)
     goal_status.create(op.get_bind(), checkfirst=True)
@@ -54,7 +54,7 @@ def upgrade() -> None:
 
     # --- partnerships ------------------------------------------------------
     partnership_status = postgresql.ENUM(
-        "pending", "active", "completed", "declined", name="partnership_status", create_type=False
+        "pending", "active", "completed", "declined", name="partnership_status"
     )
     partnership_status.create(op.get_bind(), checkfirst=True)
 
@@ -80,7 +80,7 @@ def upgrade() -> None:
     op.create_index("ix_partnerships_invite_token", "partnerships", ["invite_token"])
 
     # --- statements ---------------------------------------------------------
-    statement_status = postgresql.ENUM("processing", "parsed", "failed", name="statement_status",create_type=False)
+    statement_status = postgresql.ENUM("processing", "parsed", "failed", name="statement_status")
     statement_status.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
@@ -97,15 +97,14 @@ def upgrade() -> None:
     op.create_index("ix_statements_user_id", "statements", ["user_id"])
 
     # --- transactions -----------------------------------------------------
-    tx_direction = postgresql.ENUM("debit", "credit", name="transaction_direction", create_type=False)
+    tx_direction = postgresql.ENUM("debit", "credit", name="transaction_direction")
     tx_category = postgresql.ENUM(
         "rent", "emi", "groceries", "utilities", "food_delivery",
         "shopping", "entertainment", "transfer", "income", "other",
         name="transaction_category",
-        create_type=False
     )
     tx_tier = postgresql.ENUM(
-        "primary", "secondary", "tertiary", "not_applicable", name="transaction_tier", create_type=False    
+        "primary", "secondary", "tertiary", "not_applicable", name="transaction_tier"
     )
     tx_direction.create(op.get_bind(), checkfirst=True)
     tx_category.create(op.get_bind(), checkfirst=True)
