@@ -6,9 +6,12 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, CurrentUser
 from app.db.database import get_db
 from app.models.statement import Statement, StatementStatus
+from app.models.transaction import Transaction, TransactionDirection
 from app.services.pdf_decrypt import decrypt_pdf_or_422
 from app.services.pdf_text_extract import extract_text_from_pdf
 from app.services.parsers.registry import get_parser
+from app.services.merchant_normalize import normalize_merchant
+from app.services.tx_hash import compute_tx_hash
 
 router = APIRouter(prefix="/statements", tags=["statements"])
 
@@ -24,25 +27,23 @@ async def upload_statement(
 ):
     """
     Uploads an encrypted bank statement PDF, decrypts it in memory, extracts
-    text, and (unless debug_raw_text=true) runs it through the bank's parser.
+    text, parses it into transaction lines, normalizes merchant names, and
+    inserts new transactions into the DB -- skipping any that already exist
+    (by tx_hash) or any file already uploaded (by file_hash).
+
+    category/tier on inserted rows are placeholders (`other` / `not_applicable`)
+    for now -- classification logic is the next phase. This phase's job is
+    correct, deduped insertion; classification will UPDATE these rows later
+    rather than needing a second insert path.
 
     debug_raw_text=true: decrypts and extracts text ONLY -- no database
-    writes at all. Use this to preview a statement's text layout as many
-    times as you want without it counting as a real upload or blocking a
-    later real upload of the same file.
-
-    This endpoint does NOT write to the `transactions` table. It returns
-    parsed lines for inspection. Classification + DB insert happen in the
-    next phase.
+    writes at all, safe to call repeatedly on the same file.
     """
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file uploaded.")
 
-    # --- Debug mode: decrypt + extract only, NO database interaction at all. ---
-    # This must happen BEFORE the dedup check / Statement row creation below,
-    # so previewing a file never creates a row that could block a real upload
-    # of that same file later.
+    # --- Debug mode: no DB interaction, same as before. ---
     if debug_raw_text:
         decrypted_bytes = decrypt_pdf_or_422(file_bytes, password)
         raw_text = extract_text_from_pdf(decrypted_bytes)
@@ -52,19 +53,19 @@ async def upload_statement(
             "raw_text": raw_text,
         }
 
-    # --- Real processing attempt from here on: dedup check + Statement row apply. ---
+    # --- File-hash dedup: same user, same exact file already uploaded. ---
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    existing = (
+    existing_statement = (
         db.query(Statement)
         .filter(Statement.user_id == user.uid, Statement.file_hash == file_hash)
         .first()
     )
-    if existing is not None:
+    if existing_statement is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"This exact file was already uploaded (statement_id={existing.id}, "
-            f"status={existing.status.value}).",
+            detail=f"This exact file was already uploaded (statement_id={existing_statement.id}, "
+            f"status={existing_statement.status.value}).",
         )
 
     statement = Statement(
@@ -105,22 +106,74 @@ async def upload_statement(
                 "raw_text_preview": raw_text[:1000],
             }
 
+        # --- Transaction-hash dedup + insert ---
+        inserted = []
+        skipped_duplicates = []
+
+        for line in parsed_lines:
+            merchant_normalized = normalize_merchant(bank_name, line.narration_raw)
+            tx_hash = compute_tx_hash(
+                user_id=user.uid,
+                tx_date=line.date,
+                amount=line.amount,
+                direction=line.direction.value,
+                merchant_raw=line.narration_raw,
+            )
+
+            existing_tx = db.query(Transaction).filter(Transaction.tx_hash == tx_hash).first()
+            if existing_tx is not None:
+                skipped_duplicates.append(
+                    {
+                        "date": line.date.isoformat(),
+                        "amount": str(line.amount),
+                        "merchant_raw": line.narration_raw,
+                        "reason": f"Duplicate of existing transaction {existing_tx.id}",
+                    }
+                )
+                continue
+
+            tx = Transaction(
+                statement_id=statement.id,
+                user_id=user.uid,
+                date=line.date,
+                amount=line.amount,
+                direction=TransactionDirection(line.direction.value),
+                merchant_raw=line.narration_raw,
+                merchant_normalized=merchant_normalized,
+                # Placeholders -- classification phase will update these.
+                # category defaults to "other", tier to "not_applicable" per the model.
+                is_manual_override=False,
+                tx_hash=tx_hash,
+            )
+            db.add(tx)
+            inserted.append(tx)
+
+        db.commit()
+        for tx in inserted:
+            db.refresh(tx)
+
         statement.status = StatementStatus.parsed
         db.commit()
 
         return {
             "statement_id": str(statement.id),
             "status": "parsed",
-            "transaction_count": len(parsed_lines),
+            "inserted_count": len(inserted),
+            "skipped_duplicate_count": len(skipped_duplicates),
             "transactions": [
                 {
-                    "date": line.date.isoformat(),
-                    "narration_raw": line.narration_raw,
-                    "amount": str(line.amount),
-                    "direction": line.direction.value,
+                    "id": str(tx.id),
+                    "date": tx.date.isoformat(),
+                    "merchant_raw": tx.merchant_raw,
+                    "merchant_normalized": tx.merchant_normalized,
+                    "amount": str(tx.amount),
+                    "direction": tx.direction.value,
+                    "category": tx.category.value,
+                    "tier": tx.tier.value,
                 }
-                for line in parsed_lines
+                for tx in inserted
             ],
+            "skipped_duplicates": skipped_duplicates,
         }
 
     except HTTPException:
@@ -129,6 +182,7 @@ async def upload_statement(
         db.commit()
         raise
     except Exception as e:
+        db.rollback()
         statement.status = StatementStatus.failed
         statement.failure_reason = f"Unexpected error: {e}"
         db.commit()
