@@ -19,8 +19,9 @@ class GoalPeriod(str, enum.Enum):
 
 class GoalStatus(str, enum.Enum):
     active = "active"
-    completed = "completed"
-    abandoned = "abandoned"
+    completed = "completed"  # target reached, whether early or by end_date
+    missed = "missed"  # end_date passed WITHOUT target being reached
+    abandoned = "abandoned"  # reserved for an explicit user cancellation, not automatic
 
 
 class Goal(Base):
