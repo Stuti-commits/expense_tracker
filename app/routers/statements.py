@@ -12,6 +12,8 @@ from app.services.pdf_text_extract import extract_text_from_pdf
 from app.services.parsers.registry import get_parser
 from app.services.merchant_normalize import normalize_merchant
 from app.services.tx_hash import compute_tx_hash
+from app.services.classification import classify_transaction
+from app.models.user import User
 
 router = APIRouter(prefix="/statements", tags=["statements"])
 
@@ -31,10 +33,11 @@ async def upload_statement(
     inserts new transactions into the DB -- skipping any that already exist
     (by tx_hash) or any file already uploaded (by file_hash).
 
-    category/tier on inserted rows are placeholders (`other` / `not_applicable`)
-    for now -- classification logic is the next phase. This phase's job is
-    correct, deduped insertion; classification will UPDATE these rows later
-    rather than needing a second insert path.
+    Each inserted row is classified at insert time via the 3-step engine
+    (merchant_overrides -> keyword rules -> amount threshold). If you add a
+    merchant_overrides rule or improve the keyword rules AFTER a statement
+    was already uploaded, re-run POST /transactions/reclassify-unclassified
+    to apply the improvement retroactively.
 
     debug_raw_text=true: decrypts and extracts text ONLY -- no database
     writes at all, safe to call repeatedly on the same file.
@@ -107,6 +110,16 @@ async def upload_statement(
             }
 
         # --- Transaction-hash dedup + insert ---
+        user_row = db.query(User).filter(User.id == user.uid).first()
+        if user_row is None:
+            statement.status = StatementStatus.failed
+            statement.failure_reason = "User not found. Call POST /users/sync first."
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found. Call POST /users/sync first.",
+            )
+
         inserted = []
         skipped_duplicates = []
 
@@ -132,16 +145,21 @@ async def upload_statement(
                 )
                 continue
 
+            tx_direction = TransactionDirection(line.direction.value)
+            category, tier = classify_transaction(
+                db, user_row, merchant_normalized, line.amount, tx_direction
+            )
+
             tx = Transaction(
                 statement_id=statement.id,
                 user_id=user.uid,
                 date=line.date,
                 amount=line.amount,
-                direction=TransactionDirection(line.direction.value),
+                direction=tx_direction,
                 merchant_raw=line.narration_raw,
                 merchant_normalized=merchant_normalized,
-                # Placeholders -- classification phase will update these.
-                # category defaults to "other", tier to "not_applicable" per the model.
+                category=category,
+                tier=tier,
                 is_manual_override=False,
                 tx_hash=tx_hash,
             )
