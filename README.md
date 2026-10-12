@@ -1,23 +1,5 @@
-# Expense Tracker — Backend (Phase 1: Scaffold + Auth)
-
-FastAPI + PostgreSQL backend, authenticated via Firebase.
-
-## What's in this phase
-
-- Project structure (`app/core`, `app/db`, `app/models`, `app/schemas`, `app/routers`)
-- Firebase Admin SDK token verification + a reusable `get_current_user` dependency
-- Postgres connection via SQLAlchemy, with Alembic wired up for migrations
-- One real model (`User`) and one real router (`/users`) to prove the whole chain works end to end
-- `/health` endpoint (no auth) for uptime checks
-
-## What's NOT in this phase (comes in later prompts)
-
-- PDF upload / parsing (Karnataka Bank parser)
-- Classification engine (merchant_overrides, category rules, tier thresholds in use)
-- Goals + partnerships
-- Dashboard endpoints
-
-## Setup
+#Expense Tracker 
+## Techniques used
 
 ### 1. Firebase
 
@@ -80,12 +62,6 @@ The flow is:
 
 There is no `/login` or `/signup` route in this backend, and there shouldn't be — that would mean you're reimplementing what Firebase already does.
 
-## Testing auth without a frontend yet
 
-You can generate a test ID token using the Firebase Admin SDK's custom token flow, or simplest: build a tiny throwaway HTML page using the Firebase client SDK (`firebase.auth().signInWithEmailAndPassword(...)`, then `.getIdToken()`), log the token, and paste it into Swagger's Authorize button at `/docs`.
 
-## Next prompt in the sequence
 
-> "Create the Postgres schema: users, goals, partnerships, statements, transactions, merchant_overrides tables, as we defined. user_id fields should be Firebase UID strings. Write the migration."
-
-The `users` table already exists from this phase — the next prompt should ADD the remaining four tables, not redo this one.
